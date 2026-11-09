@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-# SQLite database + single-instance lock live here; mount it to persist.
-VOLUME /clera/data
+# Создаем папку для базы данных (вместо директивы VOLUME)
+RUN mkdir -p /clera/data
 
 ENV PYTHONUNBUFFERED=1
 
