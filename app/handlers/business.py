@@ -33,11 +33,7 @@ log = logging.getLogger(__name__)
 
 
 def _can_reply_of(bc: object) -> bool:
-    """Read reply permission across Bot API versions.
-
-    Newer Bot API nests it under ``rights`` (BusinessBotRights); older versions
-    expose a plain ``can_reply`` boolean. Handle both without assuming either.
-    """
+    """Read reply permission across Bot API versions."""
     rights = getattr(bc, "rights", None)
     if rights is not None:
         return bool(getattr(rights, "can_reply", False))
@@ -65,10 +61,11 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
         await context.bot.send_message(
             chat_id=_control_chat(conn.owner_user_id),
             text=(
-                "✅ Clera connected.\n"
-                "I'll answer your chats automatically, in your voice. When a "
-                "message needs *you* (money, commitments, things I don't know), "
-                "I'll ping you here instead of replying."
+                "✅ **Clera подключена.**\n"
+                "Я буду автоматически отвечать на ваши чаты от вашего имени. "
+                "Если сообщение потребует вашего личного участия (деньги, "
+                "обязательства или вопросы, в которых я не разбираюсь), "
+                "я пришлю вам уведомление сюда."
             ),
             parse_mode="Markdown",
         )
@@ -78,11 +75,7 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle a message in a connected chat.
-
-    Messages the owner types themselves are recorded (as voice/context) but never
-    replied to. Only messages *from the contact* produce a draft.
-    """
+    """Handle a message in a connected chat."""
     msg = update.business_message
     if msg is None:
         return
@@ -91,16 +84,12 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text and msg.voice is not None:
         transcript = await _voice_to_text(context, msg)
         if transcript is None:
-            # No transcription backend (e.g. Linux server) or it failed. The
-            # message must still enter history — losing it silently is worse.
             log.warning("Voice message in chat %s could not be transcribed", msg.chat.id)
             text = "[voice] (audio archived, no transcript yet)"
             unheard_voice = True
         else:
             text = f"[voice] {transcript}"
     elif not text and msg.photo:
-        # Record photos so the secretary isn't blind to them: description when
-        # vision is available (and we're allowed to call an LLM), caption always.
         description = None
         if not settings.collect_only:
             description = await _photo_to_text(context, msg)
@@ -116,8 +105,6 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     bc_id = msg.business_connection_id
     conn = store.get_connection(bc_id)
     if conn is None:
-        # We may have missed (or failed to process) the business_connection
-        # update. Recover by fetching the connection details on demand.
         try:
             bc = await context.bot.get_business_connection(bc_id)
             conn = store.upsert_connection(
@@ -135,7 +122,6 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     ts = int(msg.date.timestamp()) if msg.date else 0
     from_owner = sender_id is not None and sender_id == conn.owner_user_id
 
-    # Record every message in the thread for history + contact memory.
     store.record_message(
         business_connection_id=bc_id,
         chat_id=chat_id,
@@ -148,36 +134,28 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     contact = store.bump_contact(bc_id, chat_id, name=contact_name, ts=ts)
 
     if settings.collect_only:
-        # Memory-building mode: store everything, act on nothing, no LLM calls.
         log.info("Collect-only: recorded message on %s chat %s", bc_id, chat_id)
         return
 
     if from_owner:
-        # The owner typed this themselves — learn from it, never reply to it.
         log.info("Recorded owner message on %s chat %s (not drafting)", bc_id, chat_id)
         await _maybe_refresh_profile(conn, chat_id, contact)
         return
 
     if contact.muted:
-        # Owner ran /mute for this thread: keep the history, never act.
         log.info("Contact %s is muted; recorded only", chat_id)
         return
 
-    # From the contact → consider drafting a reply.
-    # Backlog catch-up guard: updates queued while the bot was offline arrive
-    # late; the owner has usually handled those already. History only, no reply.
     if is_stale(ts, int(time.time()), settings.stale_after_seconds):
         log.info("Message on %s chat %s is stale (backlog); recorded, not replying", bc_id, chat_id)
         return
 
-    # A fresh voice note we couldn't hear can't be answered — hand it to the
-    # owner instead of letting the model reply to unknown content.
     if unheard_voice:
         await context.bot.send_message(
             chat_id=_control_chat(conn.owner_user_id),
             text=(
-                f"🎙 *{contact.name or 'A contact'}* sent a voice note I couldn't "
-                "transcribe — please listen and answer it yourself."
+                f"🎙 *{contact.name or 'Контакт'}* прислал голосовое сообщение, "
+                "которое я не смог расшифровать. Пожалуйста, прослушайте и ответьте сами."
             ),
             parse_mode="Markdown",
         )
@@ -210,10 +188,8 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _maybe_refresh_profile(conn, chat_id, contact)
         return
 
-    contact_label = contact.name or f"chat {chat_id}"
+    contact_label = contact.name or f"чат {chat_id}"
 
-    # DRAFT (opt-in review mode): post to the owner's control chat for approval.
-    # Silent/notify decisions apply here too — there is nothing to approve.
     if result.action == "silent":
         store.record_activity(bc_id, chat_id, "silent", f"{contact_label}: {text[:80]}", ts)
         log.info("Agent stayed silent on %s chat %s (review mode)", bc_id, chat_id)
@@ -221,7 +197,7 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if result.action == "notify":
         await context.bot.send_message(
             chat_id=_control_chat(conn.owner_user_id),
-            text=f"👋 *A contact needs you:*\n{text}\n\n_{result.text}_",
+            text=f"👋 *Контакт требует вашего внимания:*\n{text}\n\n_{result.text}_",
             parse_mode="Markdown",
         )
         store.record_activity(bc_id, chat_id, "escalated", f"{contact_label}: {text[:80]}", ts)
@@ -235,20 +211,20 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         proposed_text=result.text,
         cost_usd=result.cost_usd,
     )
-    demo = " _(placeholder — set ANTHROPIC_API_KEY for real drafts)_" if result.placeholder else ""
+    demo = " _(заглушка — установите ANTHROPIC_API_KEY для реальных ответов)_" if result.placeholder else ""
     keyboard = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ Send", callback_data=f"send:{draft.draft_id}"),
-                InlineKeyboardButton("🗑 Discard", callback_data=f"discard:{draft.draft_id}"),
+                InlineKeyboardButton("✅ Отправить", callback_data=f"send:{draft.draft_id}"),
+                InlineKeyboardButton("🗑 Удалить", callback_data=f"discard:{draft.draft_id}"),
             ]
         ]
     )
     await context.bot.send_message(
         chat_id=_control_chat(conn.owner_user_id),
         text=(
-            f"✉️ *New message from a contact:*\n{text}\n\n"
-            f"🤖 *Proposed reply* (~${result.cost_usd:.4f}, {result.model}){demo}:\n"
+            f"✉️ *Новое сообщение от контакта:*\n{text}\n\n"
+            f"🤖 *Предлагаемый ответ* (~${result.cost_usd:.4f}, {result.model}){demo}:\n"
             f"{result.text}"
         ),
         parse_mode="Markdown",
@@ -265,16 +241,8 @@ async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def _voice_to_text(context, msg) -> str | None:
-    """Download a Telegram voice note and transcribe it locally. None on failure.
-
-    On hosts without a transcription backend (e.g. Linux servers — mlx-whisper
-    is Apple-Silicon-only) the audio is archived to ``data/voices/`` so the
-    content stays recoverable and can be transcribed later.
-    """
     from app.agent import transcribe
-
     tg_file = await context.bot.get_file(msg.voice.file_id)
-
     if not transcribe.available():
         archive_dir = os.path.join(os.path.dirname(settings.sqlite_path) or ".", "voices")
         os.makedirs(archive_dir, exist_ok=True)
@@ -285,7 +253,6 @@ async def _voice_to_text(context, msg) -> str | None:
         except Exception:
             log.exception("Could not archive voice note for chat %s", msg.chat.id)
         return None
-
     fd, path = tempfile.mkstemp(suffix=".oga")
     os.close(fd)
     try:
@@ -297,9 +264,7 @@ async def _voice_to_text(context, msg) -> str | None:
 
 
 async def _photo_to_text(context, msg) -> str | None:
-    """Download the largest size of a photo and describe it. None if unavailable."""
     from app.agent import vision
-
     if not vision.available():
         return None
     tg_file = await context.bot.get_file(msg.photo[-1].file_id)
@@ -318,7 +283,7 @@ async def _handle_auto(
 ) -> None:
     """Fully automatic mode: act on the agent's reply/silent/notify decision."""
     bc_id = conn.business_connection_id
-    contact_label = (msg.from_user.first_name if msg.from_user else None) or "a contact"
+    contact_label = (msg.from_user.first_name if msg.from_user else None) or "контакт"
     control = _control_chat(conn.owner_user_id)
 
     if result.action == "silent":
@@ -328,17 +293,15 @@ async def _handle_auto(
         log.info("Agent stayed silent on %s chat %s", bc_id, chat_id)
         return
 
-    # A placeholder completion (no LLM configured) must never be sent as the
-    # owner — surface it to them instead.
     if result.action == "notify" or result.placeholder:
         note = (
             result.text
             if result.action == "notify"
-            else "no LLM is configured (set ANTHROPIC_API_KEY), so I can't reply for you."
+            else "LLM не настроен (проверьте ANTHROPIC_API_KEY), поэтому я не могу ответить за вас."
         )
         await context.bot.send_message(
             chat_id=control,
-            text=f"👋 *{contact_label} needs you:*\n{incoming_text}\n\n_{note}_",
+            text=f"👋 *{contact_label} требует вашего внимания:*\n{incoming_text}\n\n_{note}_",
             parse_mode="Markdown",
         )
         store.record_activity(
@@ -347,7 +310,6 @@ async def _handle_auto(
         log.info("Escalated message on %s chat %s to owner", bc_id, chat_id)
         return
 
-    # The owner may have answered while we were generating — never talk over them.
     latest = store.recent_messages(bc_id, chat_id, 1)
     if latest and latest[-1].direction == "out":
         log.info("Owner replied on %s chat %s while drafting; staying silent", bc_id, chat_id)
@@ -372,21 +334,16 @@ async def _handle_auto(
     if settings.notify_auto_replies:
         await context.bot.send_message(
             chat_id=control,
-            text=f"↩️ *{contact_label}:* {incoming_text}\n*Me:* {result.text}",
+            text=f"↩️ *{contact_label}:* {incoming_text}\n*Я:* {result.text}",
             parse_mode="Markdown",
         )
 
 
 def _control_chat(owner_user_id: int) -> int:
-    """Where escalations and activity notes go: configured chat, else the owner's own."""
     return settings.control_chat_id or owner_user_id
 
 
 async def _maybe_refresh_profile(conn: Connection, chat_id: int, contact: Contact) -> None:
-    """Rebuild the contact's durable profile every N messages.
-
-    Runs the summarizer off the event loop so it never blocks message handling.
-    """
     every = settings.profile_refresh_every
     if every <= 0 or contact.message_count % every != 0:
         return
