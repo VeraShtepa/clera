@@ -7,6 +7,7 @@ what we know about the contact.
 
 from __future__ import annotations
 
+import os
 from app.store.models import Message
 
 _DRAFT_SYSTEM = """\
@@ -28,11 +29,13 @@ What you know about this contact:
 
 Business Context & Goals:
 - The owner works with two main projects: Hash AI and Binibit.
-- Hash AI offers a trial period with a gift of 10,000 tokens for new users.
-- Binibit has a convenient mini-app for starting work.
+- Hash AI offers a trial period with a gift of 10,000 tokens for new users. Provide this link: {hash_link}
+- Binibit has a convenient mini-app for starting work. Provide this link: {binibit_link}
 - If a person asks what the owner does for a living, or is looking for ways to \
-earn money, you should pitch these projects (Hash AI and Binibit) and mention the \
-10,000 token gift.
+earn money, you should pitch these projects (Hash AI and Binibit), mention the \
+10,000 token gift, and provide the links above.
+- NEVER provide any other links (like t.me/binibit_bini or any general chats). \
+Only provide the links specified above.
 - If a person is a spammer, recruiter, or offers dubious schemes (like "Valentina" \
 offering AI tech), politely but firmly refuse. Do not pitch them your projects. \
 Say something like: "Спасибо, но мне это не интересно. Всего доброго!".
@@ -120,10 +123,16 @@ def format_exemplars(pairs: list[tuple[str, str]]) -> str:
 def build_draft_system(
     tone: str, profile: str, exemplars: list[tuple[str, str]] | None = None
 ) -> str:
+    # Берем ссылки из переменных окружения Railway (или используем запасные)
+    hash_link = os.getenv("HASH_AI_LINK", "https://t.me/Hash_robo_bot?start=d18HJANI-9LW")
+    binibit_link = os.getenv("BINIBIT_LINK", "https://t.me/binichain_bot?startapp=ref_1a05665cb388eb90")
+    
     return _DRAFT_SYSTEM.format(
         tone=tone,
         profile=profile.strip() or "Nothing yet — infer what you can from the conversation.",
         exemplars=format_exemplars(exemplars or []),
+        hash_link=hash_link,
+        binibit_link=binibit_link,
     )
 
 
